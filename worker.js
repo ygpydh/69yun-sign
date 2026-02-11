@@ -9,15 +9,28 @@ export default {
     async fetch(request, env, ctx) {
         await initializeVariables(env);
         const url = new URL(request.url);
-        // 增加路由判断，防止浏览器图标请求触发脚本
+
+        // 防止浏览器图标请求误触
         if (url.pathname == "/favicon.ico") return new Response(null, { status: 204 });
 
-        if (url.pathname == "/tg") {
-            await sendMessage("测试消息：Telegram 通推配置正常！");
-        } else if (url.pathname == `/${pass}`) {
-            await checkin();
+        // === 新增：手动签到路由 ===
+        if (url.pathname == "/sign") {
+            // 传入 "手动执行" 标记
+            const result = await checkin("手动执行");
+            return new Response(result, {
+                status: 200,
+                headers: { 'Content-Type': 'text/plain;charset=UTF-8' }
+            });
         }
-        return new Response(签到结果 || "请检查路径或执行定时任务", {
+        // ========================
+
+        if (url.pathname == "/tg") {
+            await sendMessage("测试消息：Telegram 通知配置正常！");
+            return new Response("测试消息已发送，请检查 Telegram", { status: 200 });
+        } 
+        
+        // 这是一个保底的路由，防止直接访问根目录报错，也可以用来做简单的连通性测试
+        return new Response("服务正常运行中。请访问 /sign 进行手动签到，或访问 /tg 测试通知。", {
             status: 200,
             headers: { 'Content-Type': 'text/plain;charset=UTF-8' }
         });
@@ -27,86 +40,73 @@ export default {
         console.log('Cron job started');
         try {
             await initializeVariables(env);
-            await checkin();
+            // 传入 "定时任务" 标记
+            await checkin("定时任务");
             console.log('Cron job completed successfully');
         } catch (error) {
             console.error('Cron job failed:', error);
-            签到结果 = `定时任务执行失败: ${error.message}`;
+            签到结果 = `❌ 定时任务执行失败: ${error.message}`;
             await sendMessage(签到结果);
         }
     },
 };
 
 async function initializeVariables(env) {
-    // 优先读取环境变量
     domain = env.JC || env.DOMAIN || domain;
     user = env.ZH || env.USER || user;
     pass = env.MM || env.PASS || pass;
     
-    // 确保域名格式正确
     if (domain && !domain.startsWith("http")) domain = `https://${domain}`;
-    // 去除域名末尾的斜杠
     if (domain && domain.endsWith("/")) domain = domain.slice(0, -1);
 
     BotToken = env.TGTOKEN || BotToken;
     ChatID = env.TGID || ChatID;
-
-    // 遮掩敏感信息用于日志展示
-    const safeDomain = domain ? (domain.substring(0, 9) + "****" + domain.substring(domain.length - 5)) : "未设置";
-    const safeUser = user ? (user.substring(0, 1) + "****" + user.substring(user.length - 5)) : "未设置";
-    
-    签到结果 = `地址: ${safeDomain}\n账号: ${safeUser}\n\nTG推送: ${ChatID ? "已启用" : "未启用"}`;
 }
 
 async function sendMessage(msg = "") {
-    // 检查 Token 和 ID 是否存在
     if (!BotToken || !ChatID) {
         console.log("未配置 TGTOKEN 或 TGID，跳过发送通知");
         return;
     }
 
-    const 账号信息 = `地址: ${domain}\n账号: ${user}`;
+    // 隐藏部分账号信息
+    const safeUser = user ? (user.substring(0, 3) + "***" + user.substring(user.length - 3)) : "未设置";
+    
+    const 账号信息 = `地址: ${domain}\n账号: ${safeUser}`;
+    
+    // 获取北京时间
     const now = new Date();
-    // 调整为北京时间
     const beijingTime = new Date(now.getTime() + 8 * 60 * 60 * 1000);
     const formattedTime = beijingTime.toISOString().replace('T', ' ').substring(0, 19);
     
-    console.log("准备发送消息:", msg);
+    // 组合最终消息
+    const text = `<b>📅 执行时间:</b> ${formattedTime}\n${账号信息}\n\n${msg}`;
     
-    const text = `执行时间: ${formattedTime}\n${账号信息}\n\n${msg}`;
-    // 使用官方 API
     const url = `https://api.telegram.org/bot${BotToken}/sendMessage`;
     
     try {
-        const resp = await fetch(url, {
+        await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 chat_id: ChatID,
                 text: text,
-                parse_mode: 'HTML'
+                parse_mode: 'HTML' // 使用 HTML 模式以支持加粗等格式
             })
         });
-        
-        const resJson = await resp.json();
-        if (!resJson.ok) {
-            console.error("Telegram 消息发送失败:", resJson);
-        } else {
-            console.log("Telegram 消息发送成功");
-        }
-        return resp;
     } catch (e) {
         console.error("Telegram 请求异常:", e);
     }
 }
 
-async function checkin() {
+// 修改 checkin 函数，接收一个 triggerType 参数
+async function checkin(triggerType = "未知触发") {
     try {
         if (!domain || !user || !pass) {
-            throw new Error('环境变量 JC(域名), ZH(账号), MM(密码) 未配置');
+            throw new Error('环境变量未配置完整');
         }
 
-        console.log(`正在登录: ${domain}`);
+        console.log(`[${triggerType}] 开始登录: ${domain}`);
 
         // 1. 登录
         const loginResponse = await fetch(`${domain}/auth/login`, {
@@ -125,21 +125,11 @@ async function checkin() {
             }),
         });
 
-        if (!loginResponse.ok) throw new Error(`登录请求状态码异常: ${loginResponse.status}`);
-        
         const loginJson = await loginResponse.json();
-        console.log('登录结果:', loginJson);
-
-        if (loginJson.ret !== 1) {
-            // 尝试直接签到，防止其实已经登录但返回非1的情况
-            console.log("登录返回非成功状态，尝试继续流程..."); 
-        }
-
-        // 获取 Cookie (关键步骤)
+        
+        // 获取 Cookie
         const cookieHeader = loginResponse.headers.get('set-cookie');
-        // 部分站点可能不需要set-cookie即可签到，但大多数需要
         const cookies = cookieHeader ? cookieHeader.split(',').map(c => c.split(';')[0]).join('; ') : "";
-        console.log('获取到的 Cookies:', cookies);
 
         // 2. 签到
         const checkinResponse = await fetch(`${domain}/user/checkin`, {
@@ -154,30 +144,32 @@ async function checkin() {
         });
 
         const checkinText = await checkinResponse.text();
-        console.log('签到原始返回:', checkinText);
-        
         let msg = "";
+        
         try {
             const res = JSON.parse(checkinText);
-            // ret 1: 成功, ret 0: 失败(通常是已签到), 其他: 错误
             msg = res.msg;
+            // 判断签到结果
             if (res.ret === 1 || checkinText.includes("已签到") || checkinText.includes("成功")) {
-                签到结果 = `✅ 签到成功\n信息: ${msg}`;
+                签到结果 = `✅ <b>签到成功</b>\n信息: ${msg}`;
             } else {
-                签到结果 = `⚠️ 签到提示\n信息: ${msg}`;
+                签到结果 = `⚠️ <b>签到提示</b>\n信息: ${msg}`;
             }
         } catch (e) {
-            // 如果返回不是JSON，可能是报错页面
-            签到结果 = `❌ 签到解析失败: 返回内容不是 JSON (可能是网站开启了 Cloudflare 盾或服务不可用)`;
+            签到结果 = `❌ <b>签到失败</b>\n原因: 网站返回非JSON格式`;
         }
 
-        await sendMessage(签到结果);
-        return 签到结果;
+        // 在结果中加上触发方式
+        const finalMsg = `<b>🚀 触发方式:</b> ${triggerType}\n${签到结果}`;
+        
+        await sendMessage(finalMsg);
+        return `[${triggerType}] 执行完毕：\n${msg}`;
 
     } catch (error) {
         console.error('Checkin Error:', error);
-        签到结果 = `❌ 脚本执行出错: ${error.message}`;
-        await sendMessage(签到结果);
-        return 签到结果;
+        const errorMsg = `❌ <b>执行出错</b>\n原因: ${error.message}`;
+        const finalMsg = `<b>🚀 触发方式:</b> ${triggerType}\n${errorMsg}`;
+        await sendMessage(finalMsg);
+        return error.message;
     }
 }
