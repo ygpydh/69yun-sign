@@ -1,7 +1,21 @@
 {
   "name": "69yun-sign",
   "compatibility_date": "2026-01-01",
-  "workers_dev": false, 
+  "workers_dev": true, 
   "preview_urls": false,
   "main": "worker.js"
+
+  // 定时任务还是要保留在本地配置里
+  "triggers": {
+    "crons": [
+      "0 0 * * *"
+    ]
+  },
+  
+  "observability": {
+    "enabled": true
+  }
+
+  // 让云端后台的设置生效
+
 }
