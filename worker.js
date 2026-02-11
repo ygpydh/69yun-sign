@@ -10,26 +10,21 @@ export default {
         await initializeVariables(env);
         const url = new URL(request.url);
 
-        // 防止浏览器图标请求误触
         if (url.pathname == "/favicon.ico") return new Response(null, { status: 204 });
 
-        // === 新增：手动签到路由 ===
         if (url.pathname == "/sign") {
-            // 传入 "手动执行" 标记
             const result = await checkin("手动执行");
             return new Response(result, {
                 status: 200,
                 headers: { 'Content-Type': 'text/plain;charset=UTF-8' }
             });
         }
-        // ========================
 
         if (url.pathname == "/tg") {
             await sendMessage("测试消息：Telegram 通知配置正常！");
             return new Response("测试消息已发送，请检查 Telegram", { status: 200 });
         } 
         
-        // 这是一个保底的路由，防止直接访问根目录报错，也可以用来做简单的连通性测试
         return new Response("服务正常运行中。请访问 /sign 进行手动签到，或访问 /tg 测试通知。", {
             status: 200,
             headers: { 'Content-Type': 'text/plain;charset=UTF-8' }
@@ -40,7 +35,6 @@ export default {
         console.log('Cron job started');
         try {
             await initializeVariables(env);
-            // 传入 "定时任务" 标记
             await checkin("定时任务");
             console.log('Cron job completed successfully');
         } catch (error) {
@@ -69,17 +63,15 @@ async function sendMessage(msg = "") {
         return;
     }
 
-    // 隐藏部分账号信息
-    const safeUser = user ? (user.substring(0, 3) + "***" + user.substring(user.length - 3)) : "未设置";
+    // 调用新的等长打码函数
+    const safeUser = maskEmailSameLength(user);
     
     const 账号信息 = `地址: ${domain}\n账号: ${safeUser}`;
     
-    // 获取北京时间
     const now = new Date();
     const beijingTime = new Date(now.getTime() + 8 * 60 * 60 * 1000);
     const formattedTime = beijingTime.toISOString().replace('T', ' ').substring(0, 19);
     
-    // 组合最终消息
     const text = `<b>📅 执行时间:</b> ${formattedTime}\n${账号信息}\n\n${msg}`;
     
     const url = `https://api.telegram.org/bot${BotToken}/sendMessage`;
@@ -91,7 +83,7 @@ async function sendMessage(msg = "") {
             body: JSON.stringify({
                 chat_id: ChatID,
                 text: text,
-                parse_mode: 'HTML' // 使用 HTML 模式以支持加粗等格式
+                parse_mode: 'HTML'
             })
         });
     } catch (e) {
@@ -99,7 +91,6 @@ async function sendMessage(msg = "") {
     }
 }
 
-// 修改 checkin 函数，接收一个 triggerType 参数
 async function checkin(triggerType = "未知触发") {
     try {
         if (!domain || !user || !pass) {
@@ -108,7 +99,6 @@ async function checkin(triggerType = "未知触发") {
 
         console.log(`[${triggerType}] 开始登录: ${domain}`);
 
-        // 1. 登录
         const loginResponse = await fetch(`${domain}/auth/login`, {
             method: 'POST',
             headers: {
@@ -125,13 +115,9 @@ async function checkin(triggerType = "未知触发") {
             }),
         });
 
-        const loginJson = await loginResponse.json();
-        
-        // 获取 Cookie
         const cookieHeader = loginResponse.headers.get('set-cookie');
         const cookies = cookieHeader ? cookieHeader.split(',').map(c => c.split(';')[0]).join('; ') : "";
 
-        // 2. 签到
         const checkinResponse = await fetch(`${domain}/user/checkin`, {
             method: 'POST',
             headers: {
@@ -149,7 +135,6 @@ async function checkin(triggerType = "未知触发") {
         try {
             const res = JSON.parse(checkinText);
             msg = res.msg;
-            // 判断签到结果
             if (res.ret === 1 || checkinText.includes("已签到") || checkinText.includes("成功")) {
                 签到结果 = `✅ <b>签到成功</b>\n信息: ${msg}`;
             } else {
@@ -159,7 +144,6 @@ async function checkin(triggerType = "未知触发") {
             签到结果 = `❌ <b>签到失败</b>\n原因: 网站返回非JSON格式`;
         }
 
-        // 在结果中加上触发方式
         const finalMsg = `<b>🚀 触发方式:</b> ${triggerType}\n${签到结果}`;
         
         await sendMessage(finalMsg);
@@ -172,4 +156,44 @@ async function checkin(triggerType = "未知触发") {
         await sendMessage(finalMsg);
         return error.message;
     }
+}
+
+// === 最终版：等长随机打码函数 ===
+function maskEmailSameLength(email) {
+    if (!email || !email.includes('@')) return email || "未设置";
+    
+    const [name, domain] = email.split('@');
+    const len = name.length;
+
+    // 1. 账号极短 (<=2位)，保留第一位，第二位打码 (保持长度)
+    // ab -> a*
+    if (len <= 2) return name[0] + "*@" + domain;
+
+    // 2. 账号较短 (3-4位)，保留第一位，最后一位随机显隐，中间填满星号
+    // abc -> a*c 或 a**
+    if (len <= 4) {
+        const keepEnd = Math.random() > 0.5; // 50% 概率保留最后一位
+        if (keepEnd) {
+            return name[0] + "*".repeat(len - 2) + name[len - 1] + "@" + domain;
+        } else {
+            return name[0] + "*".repeat(len - 1) + "@" + domain;
+        }
+    }
+
+    // 3. 正常长度账号 (>4位)
+    // 随机决定保留开头几个字符 (2 到 长度的一半)
+    const keepStartCount = 2 + Math.floor(Math.random() * (Math.floor(len / 2) - 1));
+    
+    // 随机决定保留结尾几个字符 (0 到 2 个)
+    // 0 = 尾巴全码，1 = 露1个尾巴，2 = 露2个尾巴
+    const keepEndCount = Math.floor(Math.random() * 3); 
+
+    // 计算中间需要填多少个星号
+    const starCount = len - keepStartCount - keepEndCount;
+
+    // 拼接
+    const startStr = name.substring(0, keepStartCount);
+    const endStr = keepEndCount > 0 ? name.substring(len - keepEndCount) : "";
+    
+    return startStr + "*".repeat(starCount) + endStr + "@" + domain;
 }
